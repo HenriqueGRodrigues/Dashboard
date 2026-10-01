@@ -1,0 +1,287 @@
+@page "/"
+@page "/analise-frota"
+@rendermode InteractiveServer
+@using System.Linq
+@using Markdig
+@using System.Net.Http
+@using System.Text
+@using System.Text.Json
+@using Microsoft.Extensions.Configuration
+@using Microsoft.AspNetCore.Components.Web
+@inject IConfiguration Config
+
+<style>
+    :root {
+        --bg-sidebar: #f7f7f8;
+        --bg-main: #ffffff;
+        --text-main: #0d0d0d;
+        --text-muted: #8e8ea0;
+        --border-color: #e5e5e5;
+        --accent: #10a37f;
+        --hover-bg: #ececec;
+    }
+
+    .dark-mode {
+        --bg-sidebar: #202123;
+        --bg-main: #343541;
+        --text-main: #ececf1;
+        --text-muted: #8e8ea0;
+        --border-color: #4d4d4f;
+        --accent: #10a37f;
+        --hover-bg: #2A2B32;
+    }
+
+    body { margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--bg-main); color: var(--text-main); }
+    
+    .app-layout { display: flex; height: 100vh; width: 100vw; overflow: hidden; }
+
+    /* Lateral (Histórico) */
+    .sidebar { width: 260px; background-color: var(--bg-sidebar); display: flex; flex-direction: column; padding: 0.5rem; border-right: 1px solid var(--border-color); }
+    .logo-container { padding: 1rem; font-weight: 600; font-size: 1.1rem; display: flex; align-items: center; gap: 8px; color: var(--text-main); }
+    .btn-new-chat { background-color: transparent; border: 1px solid var(--border-color); color: var(--text-main); padding: 12px; border-radius: 6px; cursor: pointer; text-align: left; display: flex; gap: 10px; align-items: center; margin-bottom: 1rem; font-weight: 500; transition: background 0.2s; }
+    .btn-new-chat:hover { background-color: var(--hover-bg); }
+    .history-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+    .history-item { padding: 12px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-main); transition: background 0.2s; }
+    .history-item:hover, .history-item.active { background-color: var(--hover-bg); }
+    
+    /* Área Principal (Chat) */
+    .main-area { flex: 1; display: flex; flex-direction: column; position: relative; }
+    .top-nav { padding: 1rem 2rem; display: flex; justify-content: flex-end; }
+    .btn-theme { background: none; border: 1px solid var(--border-color); color: var(--text-main); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+    
+    .chat-container { flex: 1; overflow-y: auto; padding: 1rem 2rem 10rem 2rem; display: flex; flex-direction: column; gap: 1.5rem; }
+    .message-row { display: flex; gap: 1.5rem; max-width: 800px; margin: 0 auto; width: 100%; line-height: 1.6; }
+    .avatar { width: 36px; height: 36px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; flex-shrink: 0; }
+    .user-avatar { background-color: #5436DA; color: white; }
+    .ai-avatar { background-color: var(--accent); color: white; }
+    .msg-content { flex: 1; padding-top: 4px; white-space: pre-wrap; font-family: inherit; }
+
+    /* Caixa de Input */
+    .input-wrapper { position: absolute; bottom: 0; left: 0; right: 0; padding: 2rem; background: linear-gradient(180deg, transparent, var(--bg-main) 30%); display: flex; justify-content: center; }
+    .input-box { width: 100%; max-width: 800px; position: relative; }
+    .chat-textarea { width: 100%; background-color: var(--bg-main); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 12px; padding: 1rem 3rem 1rem 1rem; font-size: 1rem; resize: none; outline: none; box-shadow: 0 0 15px rgba(0,0,0,0.05); font-family: inherit; }
+    .chat-textarea:focus { border-color: var(--accent); }
+    .btn-send { position: absolute; right: 10px; bottom: 12px; background-color: var(--accent); color: white; border: none; border-radius: 6px; width: 32px; height: 32px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s; }
+    .btn-send:disabled { background-color: var(--border-color); cursor: not-allowed; }
+
+    .msg-content table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+    .msg-content th, .msg-content td { border: 1px solid var(--border-color); padding: 8px; text-align: left; }
+    .msg-content th { background-color: var(--hover-bg); }
+    .msg-content p { margin-bottom: 0.5rem; }
+</style>
+
+<div class="@(isDarkMode ? "dark-mode" : "")">
+    <div class="app-layout">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="logo-container">
+                <span style="font-size: 1.4rem;">🚙</span> <strong>Frota.AI</strong>
+            </div>
+            
+            <button class="btn-new-chat" @onclick="NovaSessao">
+                ➕ Novo Diagnóstico
+            </button>
+            
+            <div class="history-list">
+                @foreach (var sessao in historico)
+                {
+                    <div class="history-item @(sessao == sessaoAtual ? "active" : "")" @onclick="() => SelecionarSessao(sessao)">
+                        💬 @sessao.Titulo
+                    </div>
+                }
+            </div>
+        </div>
+
+        <!-- Main Chat Area -->
+        <div class="main-area">
+            <div class="top-nav">
+                <button class="btn-theme" @onclick="AlternarTema">
+                    @(isDarkMode ? "☀️ Modo Claro" : "🌙 Modo Escuro")
+                </button>
+            </div>
+
+            <div class="chat-container">
+                @if (sessaoAtual.Mensagens.Count == 0)
+                {
+                    <div style="text-align: center; margin-top: 10vh; color: var(--text-muted);">
+                        <h2 style="color: var(--text-main);">Como posso ajudar a sua frota hoje?</h2>
+                        <p>Descreva sintomas mecânicos, análises de consumo ou métricas de KPIs.</p>
+                    </div>
+                }
+
+                @foreach (var msg in sessaoAtual.Mensagens)
+                {
+                    <div class="message-row">
+                        <div class="avatar @(msg.Role == "user" ? "user-avatar" : "ai-avatar")">
+                            @(msg.Role == "user" ? "👤" : "🧠")
+                        </div>
+                        <div class="msg-content">@((MarkupString)Markdown.ToHtml(msg.Content ?? ""))</div>
+                    </div>
+                }
+
+                @if (carregando)
+                {
+                    <div class="message-row">
+                        <div class="avatar ai-avatar">🧠</div>
+                        <div class="msg-content" style="color: var(--text-muted);">Processando dados de telemetria...</div>
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(erroMensagem))
+                {
+                    <div class="message-row">
+                        <div class="avatar" style="background-color: #dc3545; color: white;">⚠</div>
+                        <div class="msg-content" style="color: #dc3545;">@erroMensagem</div>
+                    </div>
+                }
+            </div>
+
+            <!-- Input Box -->
+            <div class="input-wrapper">
+                <div class="input-box">
+                    <textarea class="chat-textarea" rows="1" placeholder="Escreva a anomalia ou parâmetro para analisar... (Pressione Enter para enviar)"
+                              @bind="inputTexto" @bind:event="oninput" @onkeyup="LidarComEnter" disabled="@carregando"></textarea>
+                    <button class="btn-send" @onclick="EnviarMensagem" disabled="@(carregando || string.IsNullOrWhiteSpace(inputTexto))">
+                        ➤
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private bool isDarkMode = false;
+    private string inputTexto = "";
+    private bool carregando = false;
+    private string erroMensagem = "";
+
+    public class Mensagem
+    {
+        public string Role { get; set; } = "";
+        public string Content { get; set; } = "";
+    }
+
+    public class Sessao
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public string Titulo { get; set; } = "Nova Análise";
+        public List<Mensagem> Mensagens { get; set; } = new();
+    }
+
+    private List<Sessao> historico = new();
+    private Sessao sessaoAtual = new();
+    private const string Endpoint = "https://api.groq.com/openai/v1/chat/completions";
+
+    protected override void OnInitialized()
+    {
+        NovaSessao();
+    }
+
+    private void NovaSessao()
+    {
+        if (sessaoAtual != null && sessaoAtual.Mensagens.Count == 0) return;
+        
+        sessaoAtual = new Sessao();
+        historico.Insert(0, sessaoAtual);
+    }
+
+    private void SelecionarSessao(Sessao s)
+    {
+        sessaoAtual = s;
+        erroMensagem = "";
+    }
+
+    private void AlternarTema()
+    {
+        isDarkMode = !isDarkMode;
+    }
+
+    private async Task LidarComEnter(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+        {
+            await EnviarMensagem();
+        }
+    }
+
+    private async Task EnviarMensagem()
+    {
+        if (string.IsNullOrWhiteSpace(inputTexto)) return;
+
+        string pergunta = inputTexto.Trim();
+        inputTexto = "";
+        carregando = true;
+        erroMensagem = "";
+
+        if (sessaoAtual.Mensagens.Count == 0)
+        {
+            sessaoAtual.Titulo = pergunta.Length > 25 ? pergunta.Substring(0, 25) + "..." : pergunta;
+        }
+
+        sessaoAtual.Mensagens.Add(new Mensagem { Role = "user", Content = pergunta });
+        StateHasChanged();
+
+        try
+        {
+            using HttpClient client = new();
+            string apiKey = Config["GroqSettings:ApiKey"] ?? "";
+            string chaveLimpa = apiKey.Trim();
+
+            if (string.IsNullOrEmpty(chaveLimpa) || chaveLimpa.Contains("COLE_AQUI"))
+            {
+                erroMensagem = "Chave de API ausente no appsettings.json.";
+                carregando = false;
+                return;
+            }
+
+            client.DefaultRequestHeaders.Add("Authorization", $"Bearer {chaveLimpa}");
+
+           // Cria a lista de mensagens começando SEMPRE pela instrução de sistema (invisível para o utilizador)
+            var mensagensParaAPI = new List<object>
+            {
+                new { role = "system", content = "Você é um assistente de IA corporativo especialista em telemetria, logística e mecânica de frotas de veículos pesados (como Scania, Volvo, etc). Responda sempre de forma técnica, direta e estruturada. Se o utilizador perguntar algo fora do contexto de frotas, mecânica ou gestão, recuse educadamente e peça para focar no diagnóstico veicular." }
+            };
+
+            // Adiciona o histórico da conversa a seguir à instrução
+            mensagensParaAPI.AddRange(sessaoAtual.Mensagens.Select(m => new { role = (m.Role == "user" ? "user" : "assistant"), content = m.Content }));
+
+            var requestBody = new
+            {
+                model = "openai/gpt-oss-20b",
+                messages = mensagensParaAPI
+            };
+
+            string jsonString = JsonSerializer.Serialize(requestBody);
+            var content = new StringContent(jsonString, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage response = await client.PostAsync(Endpoint, content);
+            string responseBody = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                erroMensagem = $"Erro da API (HTTP {(int)response.StatusCode})";
+                carregando = false;
+                return;
+            }
+
+            using JsonDocument doc = JsonDocument.Parse(responseBody);
+            string resposta = doc.RootElement
+                .GetProperty("choices")[0]
+                .GetProperty("message")
+                .GetProperty("content")
+                .GetString() ?? "Sem conteúdo.";
+
+            sessaoAtual.Mensagens.Add(new Mensagem { Role = "ai", Content = resposta });
+        }
+        catch (Exception ex)
+        {
+            erroMensagem = $"Erro interno: {ex.Message}";
+        }
+        finally
+        {
+            carregando = false;
+            StateHasChanged();
+        }
+    }
+}
